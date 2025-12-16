@@ -1,0 +1,26 @@
+FROM eclipse-temurin:17-jre-alpine
+
+LABEL maintainer="nsiriaziz009@gmail.com"
+LABEL description="Spring Boot Application"
+
+# Créer un utilisateur non-root (sécurité)
+RUN addgroup -S spring && adduser -S spring -G spring
+
+WORKDIR /app
+
+# Copier le JAR
+COPY target/*.jar app.jar
+
+# Donner les droits au user spring
+RUN chown spring:spring app.jar
+
+# Utiliser le user non-root
+USER spring:spring
+
+EXPOSE 8080
+
+# Variables d'environnement pour la JVM
+ENV JAVA_OPTS="-Xmx512m -Xms256m"
+
+# Lancer l'application
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
