@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: springproject-service
+  labels:
+    app: springproject
+spec:
+  type: NodePort  # Utilisez LoadBalancer si vous avez un cloud provider
+  selector:
+    app: springproject
+  ports:
+    - protocol: TCP
+      port: 8080        # Port du service
+      targetPort: 8080  # Port du container
+      nodePort: 30080   # Port accessible de l'extérieur (30000-32767)
