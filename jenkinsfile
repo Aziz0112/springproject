@@ -1,0 +1,286 @@
+pipeline {
+    agent any
+
+    environment {
+        // Configuration Git
+        GIT_REPO = 'https://github.com/Aziz0112/springproject.git'
+        GIT_BRANCH = 'main'
+
+        // Configuration SonarQube
+        SONAR_HOST_URL = 'http://192.168.33.10:9000'
+        SONAR_PROJECT_KEY = 'azizproject'
+
+        // Configuration Docker Hub
+        DOCKER_HUB_CREDENTIALS = 'docker-hub-credentials'
+        DOCKER_IMAGE_NAME = 'nsiriaziz/springproject'
+        DOCKER_IMAGE_TAG = "${BUILD_NUMBER}"
+
+        // Namespace Kubernetes
+        K8S_NAMESPACE = 'default'
+    }
+
+    tools {
+        maven 'maven-3.6.3'
+        jdk 'JAVA_HOME'
+    }
+
+    stages {
+        stage('1. Récupération du code depuis Git') {
+            steps {
+                echo '📥 Clonage du repository Git...'
+                git branch: "${GIT_BRANCH}",
+                    credentialsId: 'git-credentials',
+                    url: "${GIT_REPO}"
+
+                sh '''
+                    echo "📂 Vérification des fichiers..."
+                    ls -la
+
+                    # Vérifier et renommer DockerFile en Dockerfile si nécessaire
+                    if [ -f "DockerFile" ]; then
+                        echo "⚠️ DockerFile détecté, renommage..."
+                        mv DockerFile Dockerfile
+                    fi
+
+                    if [ ! -f "Dockerfile" ]; then
+                        echo "❌ Dockerfile manquant!"
+                        exit 1
+                    fi
+
+                    # Vérifier le dossier K8s
+                    if [ -d "K8s" ]; then
+                        echo "✅ Dossier K8s trouvé"
+                        ls -la K8s/
+                    fi
+                '''
+                echo '✅ Code récupéré avec succès'
+            }
+        }
+
+        stage('2. Clean') {
+            steps {
+                echo '🧹 Nettoyage du projet...'
+                sh 'mvn clean'
+                echo '✅ Nettoyage terminé'
+            }
+        }
+
+        stage('3. Compile') {
+            steps {
+                echo '⚙️ Compilation du projet...'
+                sh 'mvn compile'
+                echo '✅ Compilation terminée'
+            }
+        }
+
+        stage('4. Analyse SonarQube') {
+            steps {
+                echo '📊 Analyse de la qualité du code avec SonarQube...'
+                withSonarQubeEnv('SonarQubeServer') {
+                    sh """
+                        mvn sonar:sonar \
+                          -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                          -Dsonar.projectName='Aziz Spring Project'
+                    """
+                }
+                echo '✅ Analyse envoyée à SonarQube'
+                echo "📊 Consultez les résultats sur: ${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
+            }
+        }
+
+        stage('5. Package') {
+            steps {
+                echo '📦 Génération du fichier JAR...'
+                sh 'mvn package -DskipTests'
+
+                sh '''
+                    echo "📦 Vérification du JAR créé:"
+                    ls -lh target/*.jar
+                '''
+                echo '✅ Fichier JAR généré avec succès'
+            }
+        }
+
+        stage('6. Archive Artifacts') {
+            steps {
+                echo '💾 Archivage de l\'artifact JAR...'
+                archiveArtifacts artifacts: 'target/*.jar',
+                                fingerprint: true,
+                                allowEmptyArchive: false
+                echo '✅ Artifact archivé'
+            }
+        }
+
+        stage('7. Build Docker Image') {
+            steps {
+                echo '🐳 Construction de l\'image Docker...'
+
+                sh '''
+                    echo "🔍 Vérification avant build Docker:"
+                    ls -la Dockerfile
+                    ls -la target/*.jar
+                '''
+
+                sh """
+                    docker build -t ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG} .
+                    docker tag ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG} ${DOCKER_IMAGE_NAME}:latest
+                """
+
+                sh '''
+                    echo "✅ Images Docker créées:"
+                    docker images | grep nsiriaziz/springproject
+                '''
+
+                echo "✅ Image Docker créée: ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+            }
+        }
+
+        stage('8. Push Docker Image') {
+            steps {
+                echo '📤 Push de l\'image vers Docker Hub...'
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_HUB_CREDENTIALS}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        echo "🔐 Connexion à Docker Hub..."
+                        echo \${DOCKER_PASS} | docker login -u \${DOCKER_USER} --password-stdin
+
+                        echo "📤 Push de l'image avec tag ${DOCKER_IMAGE_TAG}..."
+                        docker push ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}
+
+                        echo "📤 Push de l'image avec tag latest..."
+                        docker push ${DOCKER_IMAGE_NAME}:latest
+
+                        echo "🔓 Déconnexion..."
+                        docker logout
+                    """
+                }
+                echo "✅ Image poussée sur Docker Hub: https://hub.docker.com/r/nsiriaziz/springproject"
+            }
+        }
+
+        stage('9. Clean Docker Images') {
+            steps {
+                echo '🧹 Nettoyage des images Docker locales...'
+                sh """
+                    docker rmi ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG} || true
+                    docker rmi ${DOCKER_IMAGE_NAME}:latest || true
+                """
+                echo '✅ Images locales nettoyées'
+            }
+        }
+
+        stage('10. Deploy to Kubernetes') {
+            steps {
+                script {
+                    echo '☸️ Déploiement sur Kubernetes...'
+
+                    // Option avec credentials (si Kubernetes distant)
+                    // Décommentez si vous utilisez des credentials
+                    /*
+                    withCredentials([file(credentialsId: 'kubernetes-config', variable: 'KUBECONFIG')]) {
+                        sh '''
+                            export KUBECONFIG=$KUBECONFIG
+
+                            if [ -d "K8s" ]; then
+                                echo "📦 Application des manifests depuis K8s/"
+                                kubectl apply -f K8s/
+
+                                # Attendre que les déploiements soient prêts
+                                kubectl rollout status deployment/springproject-deployment -n ${K8S_NAMESPACE} --timeout=300s || true
+                            else
+                                echo "⚠️ Dossier K8s/ non trouvé"
+                            fi
+
+                            echo "=== PODS ==="
+                            kubectl get pods -n ${K8S_NAMESPACE}
+
+                            echo "=== SERVICES ==="
+                            kubectl get svc -n ${K8S_NAMESPACE}
+                        '''
+                    }
+                    */
+
+                    // Option sans credentials (si Kubernetes local)
+                    // Décommentez si Kubernetes est sur le même serveur que Jenkins
+
+                    sh """
+                        if [ -d "K8s" ]; then
+                            echo "📦 Application des manifests depuis K8s/"
+                            kubectl apply -f K8s/
+
+                            # Attendre que les déploiements soient prêts
+                            kubectl rollout status deployment/springproject-deployment -n ${K8S_NAMESPACE} --timeout=300s || true
+                        else
+                            echo "⚠️ Dossier K8s/ non trouvé"
+                        fi
+
+                        echo "=== PODS ==="
+                        kubectl get pods -n ${K8S_NAMESPACE} || true
+
+                        echo "=== SERVICES ==="
+                        kubectl get svc -n ${K8S_NAMESPACE} || true
+                    """
+
+
+                    echo '✅ Déploiement Kubernetes terminé!'
+                }
+            }
+        }
+
+        stage('11. Vérification du déploiement') {
+            steps {
+                echo '🔍 Vérification du déploiement...'
+                sh """
+                    echo "=== INFORMATIONS DE DÉPLOIEMENT ==="
+                    kubectl get all -n ${K8S_NAMESPACE} | grep springproject || true
+
+                    echo ""
+                    echo "=== URL D'ACCÈS ==="
+                    echo "Service accessible via NodePort"
+                    NODE_IP=\$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+                    echo "URL: http://\${NODE_IP}:30080"
+                """
+                echo '✅ Vérification terminée'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline CI/CD exécuté avec succès!'
+            echo "📦 Artifact JAR disponible dans Jenkins"
+            echo "📊 Résultats SonarQube: ${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
+            echo "🐳 Image Docker: ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+            echo "🔗 Docker Hub: https://hub.docker.com/r/nsiriaziz/springproject"
+            echo ""
+            echo "📥 Commande pour pull:"
+            echo "   docker pull ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+            echo ""
+            echo "🚀 Commande pour run:"
+            echo "   docker run -p 8080:8080 ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+            echo ""
+            echo "☸️ Application déployée sur Kubernetes dans le namespace '${K8S_NAMESPACE}'"
+        }
+
+        failure {
+            echo '❌ Le pipeline a échoué! Vérifiez les logs ci-dessus.'
+            echo '💡 Assurez-vous que:'
+            echo '   - Les credentials Git sont configurés'
+            echo '   - SonarQube est accessible'
+            echo '   - Maven est correctement installé'
+            echo '   - Docker est installé et accessible'
+            echo '   - Les credentials Docker Hub sont configurés'
+            echo '   - Le Dockerfile existe à la racine du projet'
+            echo '   - Kubernetes est configuré et accessible'
+        }
+
+        always {
+            echo '🧹 Nettoyage de l\'espace de travail...'
+            cleanWs()
+            echo '✅ Pipeline terminé'
+        }
+    }
+}
