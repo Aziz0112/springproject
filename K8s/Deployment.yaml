@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: springproject-deployment
+  namespace: devops
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: springproject
+  template:
+    metadata:
+      labels:
+        app: springproject
+    spec:
+      containers:
+        - name: spring-container
+          image: nsiriaziz/springproject:latest
+          ports:
+            - containerPort: 8080
